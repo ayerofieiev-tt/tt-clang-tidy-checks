@@ -15,3 +15,4 @@ option(DOWNLOAD_CLANG_TIDY_HEADERS "Automatically download clang-tidy headers" O
 # These plugins extend clang-tidy with TTNN-specific checks
 
 add_subdirectory(ttnn-nanobind-overload)
+add_subdirectory(ttnn-return-value-type-alias)
