@@ -39,7 +39,7 @@ jobs:
         run: |
           clang-tidy-${{ matrix.clang_version }} \
             -load build/ttnn-nanobind-overload/TtNNNanobindOverloadCheck.so \
-            --list-checks 2>&1 | grep ttnn-nanobind-unnecessary-overload
+            -checks='*,ttnn-*' --list-checks 2>&1 | grep ttnn-nanobind-unnecessary-overload
 
       - name: Test on sample file
         run: |

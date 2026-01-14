@@ -16,52 +16,6 @@ namespace clang::tidy::ttnn {
 
 namespace {
 
-// Helper function to check if a type name contains "nanobind_overload_t"
-bool isNanobindOverloadTType(const clang::Type *Type) {
-  if (!Type) {
-    return false;
-  }
-
-  // Check template specialization
-  if (const auto *TemplateType = Type->getAs<clang::TemplateSpecializationType>()) {
-    const auto *TemplateDecl = TemplateType->getTemplateName().getAsTemplateDecl();
-    if (TemplateDecl) {
-      // Check unqualified name
-      std::string TypeName = TemplateDecl->getNameAsString();
-      if (TypeName.find("nanobind_overload_t") != std::string::npos) {
-        return true;
-      }
-
-      // Check qualified name
-      if (const auto *NamedDecl = dyn_cast<clang::NamedDecl>(TemplateDecl)) {
-        std::string QualifiedName = NamedDecl->getQualifiedNameAsString();
-        if (QualifiedName.find("nanobind_overload_t") != std::string::npos ||
-            QualifiedName.find("ttnn::nanobind_overload_t") != std::string::npos) {
-          return true;
-        }
-      }
-    }
-  }
-
-  // Check typedef/type alias
-  if (const auto *TypedefType = Type->getAs<clang::TypedefType>()) {
-    const auto *TypedefDecl = TypedefType->getDecl();
-    std::string TypedefName = TypedefDecl->getNameAsString();
-    if (TypedefName.find("nanobind_overload_t") != std::string::npos) {
-      return true;
-    }
-    // Check underlying type
-    return isNanobindOverloadTType(TypedefDecl->getUnderlyingType().getTypePtr());
-  }
-
-  // Check for ElaboratedType (e.g., "ttnn::nanobind_overload_t")
-  if (const auto *ElaboratedType = Type->getAs<clang::ElaboratedType>()) {
-    return isNanobindOverloadTType(ElaboratedType->getNamedType().getTypePtr());
-  }
-
-  return false;
-}
-
 // Helper function to check if an expression is a nanobind_overload_t
 bool isNanobindOverloadTExpr(const clang::Expr *E) {
   if (!E) {
@@ -73,38 +27,6 @@ bool isNanobindOverloadTExpr(const clang::Expr *E) {
   return TypeName.find("nanobind_overload_t") != std::string::npos;
 }
 
-// Helper to get the source text for a range
-std::string getSourceText(clang::SourceRange Range, const clang::SourceManager &SM,
-                          const clang::LangOptions &LO) {
-  if (Range.isInvalid()) {
-    return "";
-  }
-  bool Invalid = false;
-  std::string Text = clang::Lexer::getSourceText(
-      clang::CharSourceRange::getTokenRange(Range), SM, LO, &Invalid).str();
-  if (Invalid) {
-    return "";
-  }
-  return Text;
-}
-
-// Helper to find the end of a lambda expression
-clang::SourceLocation findLambdaEnd(const clang::Expr *LambdaExpr,
-                                     const clang::SourceManager &SM,
-                                     const clang::LangOptions &LO) {
-  if (!LambdaExpr) {
-    return clang::SourceLocation();
-  }
-
-  // For lambda expressions, find the closing brace
-  if (const auto *Lambda = dyn_cast<clang::LambdaExpr>(LambdaExpr)) {
-    return Lambda->getEndLoc();
-  }
-
-  // For other expressions, use their end location
-  return LambdaExpr->getEndLoc();
-}
-
 // Generate fix for a single nanobind_overload_t argument
 void generateFixForOverload(const clang::Expr *OverloadExpr,
                             const clang::SourceManager &SM,
@@ -114,113 +36,122 @@ void generateFixForOverload(const clang::Expr *OverloadExpr,
     return;
   }
 
-  // Find the constructor expression
-  const clang::CXXConstructExpr *ConstructExpr = nullptr;
-  if (const auto *CE = dyn_cast<clang::CXXConstructExpr>(OverloadExpr)) {
-    ConstructExpr = CE;
-  } else if (const auto *TempExpr = dyn_cast<clang::CXXTemporaryObjectExpr>(OverloadExpr)) {
-    ConstructExpr = TempExpr;
-  }
-
-  if (!ConstructExpr || ConstructExpr->getNumArgs() < 2) {
-    // Need at least lambda + one argument
+  // We need CXXTemporaryObjectExpr to get proper type location
+  const auto *TempExpr = dyn_cast<clang::CXXTemporaryObjectExpr>(OverloadExpr);
+  if (!TempExpr || TempExpr->getNumArgs() < 2) {
     return;
   }
 
-  // Get the lambda (first argument)
-  const clang::Expr *LambdaArg = ConstructExpr->getArg(0)->IgnoreImplicit();
-  if (!LambdaArg) {
+  // Get the type source info - this gives us the exact location of the type name
+  clang::TypeSourceInfo *TSI = TempExpr->getTypeSourceInfo();
+  if (!TSI) {
+    return;
+  }
+
+  // Get the type location - find "nanobind_overload_t" and replace with "nanobind_arguments_t"
+  clang::SourceLocation TypeStart = TSI->getTypeLoc().getBeginLoc();
+  if (TypeStart.isInvalid()) {
+    return;
+  }
+
+  // Read the source text to find "nanobind_overload_t"
+  const char *TypeData = SM.getCharacterData(TypeStart);
+  if (!TypeData) {
+    return;
+  }
+
+  // Search for "nanobind_overload_t" in the source
+  std::string TypeText(TypeData, std::min(size_t(100), strlen(TypeData)));
+  size_t NanobindPos = TypeText.find("nanobind_overload_t");
+  if (NanobindPos == std::string::npos) {
+    return;
+  }
+
+  // "nanobind_overload_t" is 19 characters
+  // Use CharSourceRange for precise character-level replacement
+  clang::SourceLocation ReplaceStart = TypeStart.getLocWithOffset(NanobindPos);
+  clang::SourceLocation ReplaceEnd = TypeStart.getLocWithOffset(NanobindPos + 19); // one past the end
+
+  // Fix 1: Replace "nanobind_overload_t" with "nanobind_arguments_t"
+  Diag << clang::FixItHint::CreateReplacement(
+      clang::CharSourceRange::getCharRange(ReplaceStart, ReplaceEnd),
+      "nanobind_arguments_t");
+
+  // Fix 2: Remove any "using OperationType = decltype(...);" line before this expression
+  // Search backward from the type start for this pattern
+  clang::SourceLocation SearchLoc = TypeStart;
+  unsigned SearchOffset = SM.getFileOffset(SearchLoc);
+  clang::FileID FID = SM.getFileID(SearchLoc);
+
+  // Get buffer data and search backward for "using OperationType"
+  bool InvalidBuf = false;
+  llvm::StringRef Buffer = SM.getBufferData(FID, &InvalidBuf);
+  if (!InvalidBuf && SearchOffset > 0) {
+    // Search backward up to 500 chars for "using OperationType"
+    size_t SearchStart = (SearchOffset > 500) ? SearchOffset - 500 : 0;
+    std::string SearchRegion = Buffer.substr(SearchStart, SearchOffset - SearchStart).str();
+
+    size_t UsingPos = SearchRegion.rfind("using OperationType");
+    if (UsingPos != std::string::npos) {
+      // Find the start of this line (go back to previous newline)
+      size_t LineStart = SearchRegion.rfind('\n', UsingPos);
+      if (LineStart == std::string::npos) {
+        LineStart = 0;
+      } else {
+        LineStart++; // Skip the newline itself
+      }
+
+      // Find the end of this line (find next newline after UsingPos)
+      size_t LineEnd = SearchRegion.find('\n', UsingPos);
+      if (LineEnd == std::string::npos) {
+        LineEnd = SearchRegion.size();
+      } else {
+        LineEnd++; // Include the newline in removal
+      }
+
+      // Create source locations for the line to remove
+      clang::SourceLocation RemoveLineStart = SM.getLocForStartOfFile(FID).getLocWithOffset(SearchStart + LineStart);
+      clang::SourceLocation RemoveLineEnd = SM.getLocForStartOfFile(FID).getLocWithOffset(SearchStart + LineEnd);
+
+      Diag << clang::FixItHint::CreateRemoval(
+          clang::CharSourceRange::getCharRange(RemoveLineStart, RemoveLineEnd));
+    }
+  }
+
+  // Fix 3: Remove the lambda (first argument) and its trailing comma
+  const clang::Expr *LambdaArg = TempExpr->getArg(0)->IgnoreImplicit();
+  const clang::Expr *NextArg = TempExpr->getArg(1)->IgnoreImplicit();
+
+  if (!LambdaArg || !NextArg) {
     return;
   }
 
   clang::SourceLocation LambdaStart = LambdaArg->getBeginLoc();
-  clang::SourceLocation LambdaEnd = findLambdaEnd(LambdaArg, SM, LO);
+  clang::SourceLocation LambdaEnd = LambdaArg->getEndLoc();
 
   if (LambdaStart.isInvalid() || LambdaEnd.isInvalid()) {
     return;
   }
 
-  // Find the comma after the lambda
+  // Find the comma after the lambda to verify structure
   clang::SourceLocation CommaLoc = clang::Lexer::findLocationAfterToken(
       LambdaEnd, clang::tok::comma, SM, LO, false);
 
-  // Determine the end of what to remove (lambda + comma + whitespace)
-  clang::SourceLocation RemoveEnd = LambdaEnd;
-  if (CommaLoc.isValid()) {
-    RemoveEnd = CommaLoc;
-    // Skip whitespace after comma to preserve formatting
-    clang::SourceLocation AfterComma = clang::Lexer::getLocForEndOfToken(CommaLoc, 0, SM, LO);
-    if (AfterComma.isValid()) {
-      // Check if there's a newline - if so, include it in removal
-      const char *AfterCommaData = SM.getCharacterData(AfterComma);
-      if (AfterCommaData && (*AfterCommaData == '\n' || *AfterCommaData == '\r')) {
-        RemoveEnd = AfterComma.getLocWithOffset(1);
-      } else {
-        // Include one space if present
-        if (*AfterCommaData == ' ') {
-          RemoveEnd = AfterComma.getLocWithOffset(1);
-        }
-      }
-    }
-  } else {
-    // No comma found, just remove to end of lambda
-    RemoveEnd = clang::Lexer::getLocForEndOfToken(LambdaEnd, 0, SM, LO);
-  }
-
-  // Find the type name location by searching in the source text
-  clang::SourceLocation ExprStart = OverloadExpr->getBeginLoc();
-  if (ExprStart.isInvalid()) {
+  if (CommaLoc.isInvalid()) {
     return;
   }
 
-  // Read source text starting from the expression
-  const char *StartData = SM.getCharacterData(ExprStart);
-  if (!StartData) {
-    return;
-  }
+  // Remove from lambda start through the comma
+  // Then skip any whitespace/newlines to align with the next argument
+  clang::SourceLocation NextArgStart = NextArg->getBeginLoc();
 
-  // Search for "nanobind_overload_t" in the source
-  std::string SearchText(StartData, std::min(200UL, strlen(StartData)));
-  size_t OverloadPos = SearchText.find("nanobind_overload_t");
-  if (OverloadPos == std::string::npos) {
-    return;
-  }
+  // We want to remove: "lambda_expr," and any whitespace up to next arg
+  // But preserve the newline + indentation of the next arg
+  // So remove from LambdaStart to just before NextArgStart
+  clang::SourceLocation RemoveEnd = NextArgStart.getLocWithOffset(-1);
 
-  // Check if it's qualified with "ttnn::"
-  bool HasQualifier = (OverloadPos >= 5 && 
-                       SearchText.substr(OverloadPos - 5, 5) == "ttnn::");
-  
-  // Calculate the actual character positions
-  const char *TypeNameStartChar = StartData + (OverloadPos - (HasQualifier ? 5 : 0));
-  const char *TypeNameEndChar = StartData + OverloadPos + strlen("nanobind_overload_t");
-
-  // Convert character pointers to source locations
-  // We need to find the file location
-  clang::FileID FID = SM.getFileID(ExprStart);
-  unsigned Offset = SM.getFileOffset(ExprStart);
-  unsigned TypeNameStartOffset = Offset + (TypeNameStartChar - StartData);
-  unsigned TypeNameEndOffset = Offset + (TypeNameEndChar - StartData);
-
-  clang::SourceLocation TypeNameStart = SM.getLocForStartOfFile(FID);
-  TypeNameStart = TypeNameStart.getLocWithOffset(TypeNameStartOffset);
-  clang::SourceLocation TypeNameEnd = SM.getLocForStartOfFile(FID);
-  TypeNameEnd = TypeNameEnd.getLocWithOffset(TypeNameEndOffset);
-
-  if (TypeNameStart.isInvalid() || TypeNameEnd.isInvalid()) {
-    return;
-  }
-
-  // Generate fixes:
-  // 1. Replace "nanobind_overload_t" (or "ttnn::nanobind_overload_t") with "ttnn::nanobind_arguments_t"
-  std::string Replacement = HasQualifier ? "ttnn::nanobind_arguments_t" : "nanobind_arguments_t";
-  Diag << clang::FixItHint::CreateReplacement(
-      clang::SourceRange(TypeNameStart, TypeNameEnd), Replacement);
-
-  // 2. Remove the lambda and its trailing comma/whitespace
-  if (RemoveEnd.isValid() && RemoveEnd != LambdaStart) {
-    Diag << clang::FixItHint::CreateRemoval(
-        clang::SourceRange(LambdaStart, RemoveEnd));
-  }
+  Diag << clang::FixItHint::CreateRemoval(
+      clang::SourceRange(LambdaStart, RemoveEnd));
 }
 
 } // namespace
