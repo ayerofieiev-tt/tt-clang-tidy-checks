@@ -1,0 +1,171 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        clang_version: [17, 18]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang ${{ matrix.clang_version }}
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.clang_version }}
+          sudo apt-get install -y llvm-${{ matrix.clang_version }}-dev libclang-${{ matrix.clang_version }}-dev
+
+      - name: Configure
+        run: |
+          mkdir build && cd build
+          cmake .. -DCLANG_VERSION=${{ matrix.clang_version }}
+
+      - name: Build
+        run: |
+          cd build
+          make -j$(nproc)
+
+      - name: Verify plugin loads
+        run: |
+          clang-tidy-${{ matrix.clang_version }} \
+            -load build/ttnn-nanobind-overload/TtNNNanobindOverloadCheck.so \
+            --list-checks 2>&1 | grep ttnn-nanobind-unnecessary-overload
+
+      - name: Test on sample file
+        run: |
+          # Create a test file
+          cat > /tmp/test.cpp << 'EOF'
+          #include <tuple>
+
+          namespace nb {
+            struct arg {
+              arg(const char*) {}
+              arg& noconvert() { return *this; }
+            };
+          }
+
+          namespace ttnn {
+            template <typename... py_args_t>
+            struct nanobind_arguments_t {
+              std::tuple<py_args_t...> value;
+              nanobind_arguments_t(py_args_t... args) : value(std::forward_as_tuple(args...)) {}
+            };
+
+            template <typename function_t, typename... py_args_t>
+            struct nanobind_overload_t {
+              function_t function;
+              nanobind_arguments_t<py_args_t...> args;
+              nanobind_overload_t(function_t function, py_args_t... args) : function{function}, args{args...} {}
+            };
+
+            struct Operation {
+              template<typename... Args>
+              void operator()(Args&&...) const {}
+            };
+            inline Operation my_op;
+
+            template<typename Op, typename... Overloads>
+            void bind_registered_operation(int, const Op&, const char*, Overloads&&...) {}
+          }
+
+          void test_single_overload() {
+            // This should trigger a warning - single overload
+            ttnn::bind_registered_operation(
+              0,
+              ttnn::my_op,
+              "doc",
+              ttnn::nanobind_overload_t{
+                [](const ttnn::Operation& self, int a) { self(a); },
+                nb::arg("a")
+              });
+          }
+
+          void test_multiple_overloads() {
+            // This should NOT trigger a warning - multiple overloads
+            ttnn::bind_registered_operation(
+              0,
+              ttnn::my_op,
+              "doc",
+              ttnn::nanobind_overload_t{
+                [](const ttnn::Operation& self, int a) { self(a); },
+                nb::arg("a")
+              },
+              ttnn::nanobind_overload_t{
+                [](const ttnn::Operation& self, int a, int b) { self(a, b); },
+                nb::arg("a"),
+                nb::arg("b")
+              });
+          }
+          EOF
+
+          # Run check and verify output
+          OUTPUT=$(clang-tidy-${{ matrix.clang_version }} \
+            -load build/ttnn-nanobind-overload/TtNNNanobindOverloadCheck.so \
+            -checks='-*,ttnn-nanobind-unnecessary-overload' \
+            /tmp/test.cpp -- -std=c++20 2>&1)
+
+          echo "$OUTPUT"
+
+          # Should find exactly 1 warning (for test_single_overload)
+          if echo "$OUTPUT" | grep -q "unnecessary use of nanobind_overload_t"; then
+            echo "✓ Check correctly detected unnecessary overload"
+          else
+            echo "✗ Check failed to detect unnecessary overload"
+            exit 1
+          fi
+
+          # Should NOT warn about test_multiple_overloads (line ~48)
+          if echo "$OUTPUT" | grep -q "test.cpp:48"; then
+            echo "✗ Check incorrectly flagged multiple overloads"
+            exit 1
+          else
+            echo "✓ Check correctly ignored multiple overloads"
+          fi
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TtNNNanobindOverloadCheck-clang${{ matrix.clang_version }}
+          path: build/ttnn-nanobind-overload/TtNNNanobindOverloadCheck.so
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir release
+          for dir in artifacts/TtNNNanobindOverloadCheck-clang*; do
+            version=$(basename "$dir" | sed 's/TtNNNanobindOverloadCheck-//')
+            cp "$dir/TtNNNanobindOverloadCheck.so" "release/TtNNNanobindOverloadCheck-${version}.so"
+          done
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*.so
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
