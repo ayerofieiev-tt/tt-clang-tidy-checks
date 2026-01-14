@@ -53,7 +53,15 @@ if(DEFINED CLANG_TIDY_INCLUDE_DIR AND EXISTS "${CLANG_TIDY_INCLUDE_DIR}/clang-ti
   message(STATUS "Using user-provided clang-tidy headers: ${CLANG_TIDY_HEADERS_DIR}")
 elseif(DOWNLOAD_CLANG_TIDY_HEADERS)
   # Auto-download the headers
-  set(LLVM_TAG "llvmorg-${CLANG_VERSION}.0.6")
+  # LLVM 17 uses 17.0.x, LLVM 18+ uses x.1.y versioning
+  if(CLANG_VERSION EQUAL 17)
+    set(LLVM_TAG "llvmorg-17.0.6")
+  elseif(CLANG_VERSION EQUAL 18)
+    set(LLVM_TAG "llvmorg-18.1.8")
+  else()
+    # For newer versions, try x.1.0 as default
+    set(LLVM_TAG "llvmorg-${CLANG_VERSION}.1.0")
+  endif()
   set(CLANG_TIDY_HEADER_URL "https://raw.githubusercontent.com/llvm/llvm-project/${LLVM_TAG}/clang-tools-extra/clang-tidy")
 
   # List of required headers
