@@ -13,11 +13,14 @@ message(STATUS "Building ttnn-return-value-type-alias plugin for Clang ${CLANG_V
 set(CLANG_LIB_DIR "/usr/lib/llvm-${CLANG_VERSION}/lib")
 set(CLANG_INCLUDE_DIR "/usr/lib/llvm-${CLANG_VERSION}/include")
 
-# Check if shared libraries exist - try multiple locations
+# Check if shared libraries exist - try multiple locations and naming conventions
+# Clang 17 uses libclang-cpp.so.17, Clang 20+ uses libclang-cpp.so.20.1 etc.
 set(CLANG_CPP_LIB "")
 foreach(TRY_LIB
     "${CLANG_LIB_DIR}/libclang-cpp.so.${CLANG_VERSION}"
-    "/usr/lib/x86_64-linux-gnu/libclang-cpp.so.${CLANG_VERSION}")
+    "${CLANG_LIB_DIR}/libclang-cpp.so.${CLANG_VERSION}.1"
+    "/usr/lib/x86_64-linux-gnu/libclang-cpp.so.${CLANG_VERSION}"
+    "/usr/lib/x86_64-linux-gnu/libclang-cpp.so.${CLANG_VERSION}.1")
   if(EXISTS "${TRY_LIB}")
     set(CLANG_CPP_LIB "${TRY_LIB}")
     break()
