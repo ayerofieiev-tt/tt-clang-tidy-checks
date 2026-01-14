@@ -155,6 +155,26 @@ bool isSimpleForwardingLambda(const clang::LambdaExpr *Lambda) {
       // Arguments are reordered or different parameter is used
       return false;
     }
+
+    // Check if there's an implicit type conversion happening
+    // Compare the type of the full call argument (before IgnoreImplicit) with the lambda param type
+    const clang::Expr *FullCallArg = SelfCall->getArg(i + ArgOffset);
+    clang::QualType CallArgType = FullCallArg->getType().getCanonicalType();
+    clang::QualType ParamType = ExpectedParam->getType().getCanonicalType();
+
+    // Strip references for comparison
+    if (CallArgType->isReferenceType()) {
+      CallArgType = CallArgType.getNonReferenceType().getCanonicalType();
+    }
+    if (ParamType->isReferenceType()) {
+      ParamType = ParamType.getNonReferenceType().getCanonicalType();
+    }
+
+    // If the types don't match, the lambda is doing implicit conversion
+    // This means nanobind_arguments_t won't work without the lambda
+    if (CallArgType != ParamType) {
+      return false;
+    }
   }
 
   return true;
