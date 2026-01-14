@@ -37,9 +37,16 @@ jobs:
 
       - name: Verify plugin loads
         run: |
-          clang-tidy-${{ matrix.clang_version }} \
+          OUTPUT=$(clang-tidy-${{ matrix.clang_version }} \
             -load build/ttnn-nanobind-overload/TtNNNanobindOverloadCheck.so \
-            -checks='-*,ttnn-nanobind-unnecessary-overload' --list-checks 2>&1 | grep ttnn-nanobind-unnecessary-overload
+            -checks='-*,ttnn-nanobind-unnecessary-overload' --list-checks 2>&1) || true
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -q "ttnn-nanobind-unnecessary-overload"; then
+            echo "✓ Plugin loaded successfully"
+          else
+            echo "✗ Plugin failed to load or check not registered"
+            exit 1
+          fi
 
       - name: Test on sample file
         run: |

@@ -13,18 +13,38 @@ message(STATUS "Building clang-tidy plugin for Clang ${CLANG_VERSION}")
 set(CLANG_LIB_DIR "/usr/lib/llvm-${CLANG_VERSION}/lib")
 set(CLANG_INCLUDE_DIR "/usr/lib/llvm-${CLANG_VERSION}/include")
 
-# Check if shared libraries exist
-set(CLANG_CPP_LIB "${CLANG_LIB_DIR}/libclang-cpp.so.${CLANG_VERSION}")
-set(LLVM_LIB "${CLANG_LIB_DIR}/libLLVM.so")
+# Check if shared libraries exist - try multiple locations
+set(CLANG_CPP_LIB "")
+foreach(TRY_LIB
+    "${CLANG_LIB_DIR}/libclang-cpp.so.${CLANG_VERSION}"
+    "/usr/lib/x86_64-linux-gnu/libclang-cpp.so.${CLANG_VERSION}")
+  if(EXISTS "${TRY_LIB}")
+    set(CLANG_CPP_LIB "${TRY_LIB}")
+    break()
+  endif()
+endforeach()
 
-if(NOT EXISTS "${CLANG_CPP_LIB}")
-  # Try alternative location
-  set(CLANG_CPP_LIB "/usr/lib/x86_64-linux-gnu/libclang-cpp.so.${CLANG_VERSION}")
-endif()
+# LLVM library - try multiple locations and names
+set(LLVM_LIB "")
+foreach(TRY_LIB
+    "${CLANG_LIB_DIR}/libLLVM.so"
+    "${CLANG_LIB_DIR}/libLLVM-${CLANG_VERSION}.so"
+    "/usr/lib/x86_64-linux-gnu/libLLVM-${CLANG_VERSION}.so"
+    "/usr/lib/x86_64-linux-gnu/libLLVM-${CLANG_VERSION}.so.1")
+  if(EXISTS "${TRY_LIB}")
+    set(LLVM_LIB "${TRY_LIB}")
+    break()
+  endif()
+endforeach()
 
-if(NOT EXISTS "${CLANG_CPP_LIB}")
+if(NOT CLANG_CPP_LIB OR NOT EXISTS "${CLANG_CPP_LIB}")
   message(FATAL_ERROR "Clang development libraries not found!\n"
     "  Install with: sudo apt-get install llvm-${CLANG_VERSION}-dev libclang-${CLANG_VERSION}-dev")
+endif()
+
+if(NOT LLVM_LIB OR NOT EXISTS "${LLVM_LIB}")
+  message(FATAL_ERROR "LLVM library not found!\n"
+    "  Install with: sudo apt-get install llvm-${CLANG_VERSION}-dev")
 endif()
 
 # Check if include directory exists
@@ -113,6 +133,7 @@ endif()
 
 message(STATUS "Found Clang shared libraries - building clang-tidy plugin")
 message(STATUS "  CLANG_CPP_LIB: ${CLANG_CPP_LIB}")
+message(STATUS "  LLVM_LIB: ${LLVM_LIB}")
 message(STATUS "  CLANG_INCLUDE_DIR: ${CLANG_INCLUDE_DIR}")
 message(STATUS "  CLANG_TIDY_HEADERS_DIR: ${CLANG_TIDY_HEADERS_DIR}")
 
